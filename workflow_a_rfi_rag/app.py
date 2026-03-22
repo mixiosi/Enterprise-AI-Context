@@ -41,14 +41,14 @@ def get_embeddings():
 
 # List available mock documents
 MOCK_DOCS_DIR = os.path.join(os.path.dirname(__file__), "mock_documents")
-available_docs = ["-- Select a document --"]
+available_docs = []
 if os.path.exists(MOCK_DOCS_DIR):
-    available_docs.extend([f for f in os.listdir(MOCK_DOCS_DIR) if f.endswith(".pdf")])
+    available_docs = [f for f in os.listdir(MOCK_DOCS_DIR) if f.endswith(".pdf")]
 
 with st.sidebar:
     st.header("📂 Ingestion Layer (The Lower Floors)")
-    st.info("Bypassing browser upload limits by reading directly from local secure storage.")
-    selected_doc = st.selectbox("Select Blueprint / OSHA Spec", available_docs)
+    st.info("Select one or more documents to build the context database.")
+    selected_docs = st.multiselect("Select Blueprints / OSHA Specs", available_docs, default=available_docs)
 
 api_key = os.environ.get("OPENROUTER_API_KEY")
 
@@ -61,36 +61,41 @@ if "rfi_db" not in st.session_state:
 if "last_uploaded" not in st.session_state:
     st.session_state.last_uploaded = None
 
-if selected_doc != "-- Select a document --":
-    # Only process if it's a new file or we don't have a DB yet
-    if st.session_state.rfi_db is None or st.session_state.last_uploaded != selected_doc:
-        with st.spinner(f"Processing {selected_doc} into Vector Database..."):
+# Create a stable identifier for the current selection
+selection_id = ",".join(sorted(selected_docs))
+
+if selected_docs:
+    # Only process if the selection changed or we don't have a DB yet
+    if st.session_state.rfi_db is None or st.session_state.last_uploaded != selection_id:
+        with st.spinner(f"Processing {len(selected_docs)} document(s) into Vector Database..."):
             try:
-                doc_path = os.path.join(MOCK_DOCS_DIR, selected_doc)
-                
-                loader = PyPDFLoader(doc_path)
-                docs = loader.load()
-                
-                text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-                splits = text_splitter.split_documents(docs)
+                all_splits = []
+                for doc_name in selected_docs:
+                    doc_path = os.path.join(MOCK_DOCS_DIR, doc_name)
+                    loader = PyPDFLoader(doc_path)
+                    docs = loader.load()
+                    
+                    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+                    splits = text_splitter.split_documents(docs)
+                    all_splits.extend(splits)
                 
                 embeddings = get_embeddings()
                 
-                # Create a fresh Chroma DB in memory
-                st.session_state.rfi_db = Chroma.from_documents(documents=splits, embedding=embeddings)
-                st.session_state.last_uploaded = selected_doc
-                st.sidebar.success(f"✅ Context Loaded: {selected_doc}")
+                # Create a fresh Chroma DB in memory with all selected documents
+                st.session_state.rfi_db = Chroma.from_documents(documents=all_splits, embedding=embeddings)
+                st.session_state.last_uploaded = selection_id
+                st.sidebar.success(f"✅ Context Loaded: {len(selected_docs)} document(s)")
             except Exception as e:
-                st.sidebar.error(f"Error processing document: {e}")
+                st.sidebar.error(f"Error processing documents: {e}")
                 st.sidebar.error(traceback.format_exc())
     else:
-        st.sidebar.success(f"✅ Context Loaded: {selected_doc}")
+        st.sidebar.success(f"✅ Context Loaded: {len(selected_docs)} document(s)")
 
 if query := st.chat_input("E.g., What is the required pipe thickness for the secondary cooling loop?"):
     st.chat_message("user").write(query)
     
-    if st.session_state.rfi_db is None:
-        st.error("Select a document from the sidebar first.")
+    if st.session_state.rfi_db is None or not selected_docs:
+        st.error("Select at least one document from the sidebar first.")
     else:
         with st.chat_message("assistant"):
             with st.spinner("Accessing Skyscraper Context..."):
@@ -101,7 +106,8 @@ if query := st.chat_input("E.g., What is the required pipe thickness for the sec
                         model="openrouter/auto", 
                         temperature=0
                     )
-                    retriever = st.session_state.rfi_db.as_retriever(search_kwargs={"k": 4})
+                    # Increase k to retrieve more chunks since we have multiple documents
+                    retriever = st.session_state.rfi_db.as_retriever(search_kwargs={"k": 6})
                     
                     prompt = ChatPromptTemplate.from_messages([
                         ("system", PENTHOUSE_SYSTEM_PROMPT),
@@ -113,9 +119,15 @@ if query := st.chat_input("E.g., What is the required pipe thickness for the sec
                     
                     response = rag_chain.invoke({"input": query})
                     
-                    citations = {str(doc.metadata.get("page", -1) + 1) for doc in response["context"]}
+                    # Format citations to include the document name
+                    citations = set()
+                    for doc in response["context"]:
+                        source = os.path.basename(doc.metadata.get("source", "Unknown"))
+                        page = doc.metadata.get("page", -1) + 1
+                        citations.add(f"{source} (Page {page})")
+                        
                     st.write(response["answer"])
-                    st.caption(f"📚 Sourced from Page(s): {', '.join(sorted(citations))}")
+                    st.caption(f"📚 Sourced from: {', '.join(sorted(citations))}")
                 except Exception as e:
                     st.error(f"Error answering query: {e}")
                     st.error(traceback.format_exc())

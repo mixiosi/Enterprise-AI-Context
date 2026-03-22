@@ -1,4 +1,6 @@
 [server]
 enableCORS = false
 enableXsrfProtection = false
+enableWebsocketCompression = false
+address = "127.0.0.1"
 maxUploadSize = 500

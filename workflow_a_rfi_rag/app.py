@@ -36,23 +36,6 @@ Context:
 def get_embeddings():
     return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-# Cache the vector store generation so it persists perfectly across reruns
-@st.cache_resource(show_spinner="Processing document into Vector Database...")
-def process_document(file_content):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-        tmp_file.write(file_content)
-        tmp_path = tmp_file.name
-    
-    loader = PyPDFLoader(tmp_path)
-    docs = loader.load()
-    
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    splits = text_splitter.split_documents(docs)
-    
-    embeddings = get_embeddings()
-    db = Chroma.from_documents(documents=splits, embedding=embeddings)
-    return db
-
 with st.sidebar:
     st.header("📂 Ingestion Layer (The Lower Floors)")
     uploaded_file = st.file_uploader("Upload Blueprint / OSHA Spec (PDF)", type="pdf")
@@ -63,21 +46,42 @@ if not api_key:
     st.warning("⚠️ OPENROUTER_API_KEY not found in environment variables. Please add it to your .env file.")
     st.stop()
 
-# Get the persistent DB if a file is uploaded
-rfi_db = None
+if "rfi_db" not in st.session_state:
+    st.session_state.rfi_db = None
+if "last_uploaded" not in st.session_state:
+    st.session_state.last_uploaded = None
+
 if uploaded_file:
-    try:
-        # We pass the raw bytes into the cached function
-        file_bytes = uploaded_file.getvalue()
-        rfi_db = process_document(file_bytes)
+    # Only process if it's a new file or we don't have a DB yet
+    if st.session_state.rfi_db is None or st.session_state.last_uploaded != uploaded_file.name:
+        with st.spinner("Processing document into Vector Database..."):
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                    tmp_file.write(uploaded_file.getvalue())
+                    tmp_path = tmp_file.name
+                
+                loader = PyPDFLoader(tmp_path)
+                docs = loader.load()
+                
+                text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+                splits = text_splitter.split_documents(docs)
+                
+                embeddings = get_embeddings()
+                
+                # Create a fresh Chroma DB in memory
+                st.session_state.rfi_db = Chroma.from_documents(documents=splits, embedding=embeddings)
+                st.session_state.last_uploaded = uploaded_file.name
+                st.sidebar.success("✅ Context Loaded into Local ChromaDB!")
+            except Exception as e:
+                st.sidebar.error(f"Error processing document: {e}")
+                st.sidebar.error(traceback.format_exc())
+    else:
         st.sidebar.success("✅ Context Loaded into Local ChromaDB!")
-    except Exception as e:
-        st.sidebar.error(f"Error processing document: {e}")
 
 if query := st.chat_input("E.g., What is the required pipe thickness for the secondary cooling loop?"):
     st.chat_message("user").write(query)
     
-    if rfi_db is None:
+    if st.session_state.rfi_db is None:
         st.error("Upload a document first.")
     else:
         with st.chat_message("assistant"):
@@ -89,7 +93,7 @@ if query := st.chat_input("E.g., What is the required pipe thickness for the sec
                         model="openrouter/auto", 
                         temperature=0
                     )
-                    retriever = rfi_db.as_retriever(search_kwargs={"k": 4})
+                    retriever = st.session_state.rfi_db.as_retriever(search_kwargs={"k": 4})
                     
                     prompt = ChatPromptTemplate.from_messages([
                         ("system", PENTHOUSE_SYSTEM_PROMPT),

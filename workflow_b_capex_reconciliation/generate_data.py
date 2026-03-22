@@ -1,14 +1,16 @@
 import sqlite3
 import random
+import os
 from datetime import datetime, timedelta
 from faker import Faker
 
 fake = Faker()
 
-def generate_mock_erp_data(db_name="capex_erp.db", num_invoices=500):
-    print(f"🏭 Generating 500 synthetic invoices & ERP budget into {db_name}...")
+def generate_mock_erp_data(num_invoices=500):
+    db_path = os.path.join(os.path.dirname(__file__), "capex_erp.db")
+    print(f"🏭 Generating {num_invoices} synthetic invoices & ERP budget into {db_path}...")
     
-    conn = sqlite3.connect(db_name)
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
     # Create Master Budget Table

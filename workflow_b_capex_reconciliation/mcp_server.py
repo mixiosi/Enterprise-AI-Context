@@ -1,10 +1,11 @@
 import sqlite3
+import os
 from mcp.server.fastmcp import FastMCP
 
 # Initialize FastMCP Server
 mcp = FastMCP("CapEx_Reconciliation_Engine")
 
-DB_PATH = "capex_erp.db"
+DB_PATH = os.path.join(os.path.dirname(__file__), "capex_erp.db")
 
 @mcp.tool()
 def get_master_budget(phase: str) -> str:
